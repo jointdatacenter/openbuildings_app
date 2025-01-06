@@ -1,7 +1,3 @@
-# Relevant changes:
-# - Only display the number of buildings after GOB data is loaded.
-# - Move the display of imagery dates below the map instead of in the sidebar.
-
 import os
 import streamlit as st
 import folium
