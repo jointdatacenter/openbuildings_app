@@ -2,13 +2,15 @@ from typing import List, Optional
 import geopandas as gpd
 import shapely
 import pandas as pd
-import s2geometry as s2
+import s2sphere as s2
 import streamlit as st
 import os
 import fsspec
 from shapely.wkt import loads
 from io import StringIO
 import json
+import psutil
+import gc
 
 from st_files_connection import FilesConnection
 
@@ -33,19 +35,25 @@ def wkt_to_s2(your_own_wkt_polygon: str) -> List[str]:
     # Get bounds of the region
     region_bounds = region_df.iloc[0].geometry.bounds
     
-    # Create S2LatLngRect for covering
-    s2_lat_lng_rect = s2.S2LatLngRect_FromPointPair(
-        s2.S2LatLng_FromDegrees(region_bounds[1], region_bounds[0]),
-        s2.S2LatLng_FromDegrees(region_bounds[3], region_bounds[2])
-    )
+    # Create S2LatLngRect for covering using s2sphere
+    sw_latlng = s2.LatLng.from_degrees(region_bounds[1], region_bounds[0])  # sw corner
+    ne_latlng = s2.LatLng.from_degrees(region_bounds[3], region_bounds[2])  # ne corner
     
-    # Cover the region using S2RegionCoverer
-    coverer = s2.S2RegionCoverer()
-    coverer.set_fixed_level(6)
-    coverer.set_max_cells(1000000)
+    # Create covering using s2sphere
+    region_coverer = s2.RegionCoverer()
+    region_coverer.max_level = 6
+    region_coverer.min_level = 6
+    region_coverer.max_cells = 1000000
     
+    # Create a rect region
+    rect = s2.LatLngRect.from_point_pair(sw_latlng, ne_latlng)
+    
+    # Get covering
+    covering = region_coverer.get_covering(rect)
+    tokens = [cell.to_token() for cell in covering]
+    print(tokens)
     # Return the covering tokens
-    return [cell.ToToken() for cell in coverer.GetCovering(s2_lat_lng_rect)]
+    return tokens
 
 ########
 import os
@@ -66,10 +74,12 @@ def download_data_from_s2_code(s2_code: str, data_dir: str) -> Optional[str]:
     if not isinstance(s2_code, str) or not isinstance(data_dir, str):
         st.error("Both s2_code and data_dir must be strings")
         return None
+    
+    print(s2_code)
 
     # Define output path
     output_path = os.path.join(data_dir, f'{s2_code}_buildings.csv.gz')
-    
+    print(output_path)
     # Ensure data directory exists
     os.makedirs(data_dir, exist_ok=True)
     
@@ -84,6 +94,7 @@ def download_data_from_s2_code(s2_code: str, data_dir: str) -> Optional[str]:
         # Construct the GCS path
         conn = st.connection('gcs', type=FilesConnection)
         gcs_path = os.path.join(BUILDING_DOWNLOAD_PATH, f'{s2_code}_buildings.csv.gz')
+        print(gcs_path)
         # st.sidebar.write(f"Downloading data from: {gcs_path}")
         
         # Open GCS file and get its total size
@@ -102,7 +113,7 @@ def download_data_from_s2_code(s2_code: str, data_dir: str) -> Optional[str]:
             # Download the file in chunks
             with open(output_path, 'wb') as out:
                 bytes_downloaded = 0
-                chunk_size = 8192  # 8KB chunks
+                chunk_size = 65536  # 64KB chunks for better efficiency
                 
                 while True:
                     chunk = f.read(chunk_size)
@@ -144,33 +155,79 @@ def download_data_from_s2_code(s2_code: str, data_dir: str) -> Optional[str]:
                 st.error(f"Error cleaning up partial file: {str(cleanup_error)}")
         return None
 
-def load_and_filter_gob_data(gob_filepath, input_geometry):
-    #user_warning = st.sidebar.empty()
+def load_and_filter_gob_data_streaming(gob_filepath, input_geometry):
+    """
+    Memory-efficient streaming processing of GOB data with chunked reading.
+    """
     try:
         header = ['latitude', 'longitude', 'area_in_meters', 'confidence', 'geometry', 'full_plus_code']
-        gob_data = pd.read_csv(gob_filepath)
-        gob_data.columns = header
-        gob_data['geometry'] = gob_data['geometry'].apply(loads)
-        gob_gdf = gpd.GeoDataFrame(gob_data, crs='EPSG:4326')
-
         
-        filtered_gob_gdf = gob_gdf[gob_gdf.intersects(input_geometry)]
-        # print(filtered_gob_gdf.info())
-        # user_warning.empty()
-
-        avg_confidence = filtered_gob_gdf['confidence'].mean()
-
-        st.session_state.building_count = len(filtered_gob_gdf)
+        # Initialize counters and accumulators
+        building_count = 0
+        confidence_sum = 0
+        filtered_features = []
+        
+        # Process CSV in chunks to reduce memory usage
+        chunk_size = 10000  # Process 10k records at a time
+        
+        for chunk in pd.read_csv(gob_filepath, chunksize=chunk_size):
+            chunk.columns = header
+            
+            # Convert geometry strings to shapely objects for this chunk only
+            chunk['geometry'] = chunk['geometry'].apply(loads)
+            chunk_gdf = gpd.GeoDataFrame(chunk, crs='EPSG:4326')
+            
+            # Filter intersecting geometries
+            filtered_chunk = chunk_gdf[chunk_gdf.intersects(input_geometry)]
+            
+            if not filtered_chunk.empty:
+                # Update counters
+                building_count += len(filtered_chunk)
+                confidence_sum += filtered_chunk['confidence'].sum()
+                
+                # Convert to GeoJSON features and append
+                for _, row in filtered_chunk.iterrows():
+                    feature = {
+                        "type": "Feature",
+                        "geometry": row['geometry'].__geo_interface__,
+                        "properties": {
+                            "latitude": row['latitude'],
+                            "longitude": row['longitude'],
+                            "area_in_meters": row['area_in_meters'],
+                            "confidence": row['confidence'],
+                            "full_plus_code": row['full_plus_code']
+                        }
+                    }
+                    filtered_features.append(feature)
+            
+            # Clear chunk from memory
+            del chunk_gdf, filtered_chunk
+            gc.collect()  # Force garbage collection
+        
+        # Calculate average confidence
+        avg_confidence = confidence_sum / building_count if building_count > 0 else 0
+        
+        # Create final GeoJSON structure
+        geojson_data = {
+            "type": "FeatureCollection",
+            "features": filtered_features
+        }
+        
+        # Store only essential data in session state
+        st.session_state.building_count = building_count
         st.session_state.avg_confidence = avg_confidence
-        st.session_state.filtered_gob_data = filtered_gob_gdf.to_crs('EPSG:4326').to_json()
-        st.session_state.info_box_visible = True  # Show info box after data is processed
-
-        # Prepare GeoJSON buffer for download
-        geojson_buffer = StringIO()
-        json.dump(json.loads(st.session_state.filtered_gob_data), geojson_buffer)
-        geojson_buffer.seek(0)
-        st.session_state.filtered_gob_geojson = geojson_buffer.getvalue()
-
+        st.session_state.filtered_gob_data = json.dumps(geojson_data)
+        st.session_state.info_box_visible = True
+        
+        # Prepare compressed GeoJSON for download
+        st.session_state.filtered_gob_geojson = json.dumps(geojson_data, separators=(',', ':'))
+        
+        # Log memory usage
+        process = psutil.Process(os.getpid())
+        memory_mb = process.memory_info().rss / 1024 / 1024
+        print(f"Memory usage after processing: {memory_mb:.1f} MB")
+        
         st.rerun()
     except Exception as e:
+        st.error(f"Error processing GOB data: {str(e)}")
         print(e)
