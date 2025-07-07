@@ -121,10 +121,8 @@ def download_and_process_gob_data(s2_tokens, input_geometry):
             raise
 
     user_warning.info("Filtering GOB data...")
-    st.session_state.filtered_gob_data = load_and_filter_gob_data(gob_filepath, input_geometry)
-    st.session_state.building_count = len(st.session_state.filtered_gob_data['features'])
+    load_and_filter_gob_data_streaming(gob_filepath, input_geometry)
     user_warning.empty()
-    st.session_state.info_box_visible = True
 
 def display_fixed_info_box():
     with st.sidebar.expander("GOB Data Summary", expanded=True):
@@ -133,9 +131,8 @@ def display_fixed_info_box():
         st.metric(label="Total of buildings (% confidence level)", 
                  value=f"{st.session_state.building_count} ({st.session_state.avg_confidence:.2f})")
         
-        if st.session_state.filtered_gob_data is not None:
-            geojson_str = json.dumps(st.session_state.filtered_gob_data, indent=2)
-            geojson_bytes = BytesIO(geojson_str.encode("utf-8"))
+        if hasattr(st.session_state, 'filtered_gob_geojson') and st.session_state.filtered_gob_geojson:
+            geojson_bytes = BytesIO(st.session_state.filtered_gob_geojson.encode("utf-8"))
             st.download_button(
                 label="Download GeoJSON",
                 data=geojson_bytes,
