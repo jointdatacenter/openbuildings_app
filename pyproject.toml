@@ -14,13 +14,8 @@ geojson = "^3.1.0"
 shapely = "^2.0.6"
 pyproj = "^3.7.0"
 ipython = "^8.29.0"
-s2geometry = "^0.9.0"
 tqdm = "^4.66.6"
-google-cloud = "^0.34.0"
-google-cloud-storage = "^2.18.2"
-fsspec = "^2024.10.0"
-gcsfs = "^2024.10.0"
-geopandas
+earthengine-api = "^0.1.401"
 
 
 [tool.poetry.group.dev.dependencies]

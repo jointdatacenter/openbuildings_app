@@ -1,4 +1,3 @@
-import os
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
@@ -8,11 +7,13 @@ from shapely.geometry import shape
 from pyproj import Transformer
 from io import BytesIO
 import json
-from google_openbuildings import *
+from google_openbuildings import (
+    DEFAULT_FEATURE_LIMIT,
+    fetch_buildings_from_gee,
+    initialize_earth_engine,
+)
 from map_features import *
-from file_manager import *
 
-data_dir = './data/'
 APP_TITLE = "Open Buildings Explorer"
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
@@ -31,11 +32,11 @@ def initialize_session_state():
         'info_box_visible': False,
         'lat': 0,
         'lon': 0,
-        'progress_message': "",
         'input_geometry': None,
         'bounds': None,
         'zoom': 0,
-        's2_tokens': [],
+        'data_truncated': False,
+        'feature_limit': DEFAULT_FEATURE_LIMIT,
     }.items():
         if key not in st.session_state:
             st.session_state[key] = default
@@ -49,9 +50,12 @@ def process_uploaded_file(uploaded_file):
 
         if st.session_state.selected_feature_name != selected_feature_name:
             st.session_state.filtered_gob_data = None
+            st.session_state.filtered_gob_geojson = None
             st.session_state.building_count = 0
             st.session_state.avg_confidence = 0.0
             st.session_state.info_box_visible = False
+            st.session_state.data_truncated = False
+            st.session_state.feature_limit = DEFAULT_FEATURE_LIMIT
 
         st.session_state.selected_feature_name = selected_feature_name
         selected_feature = next((feature for feature in features if feature['properties'].get('name') == selected_feature_name), None)
@@ -65,13 +69,10 @@ def process_uploaded_file(uploaded_file):
 
 def display_selected_feature(selected_feature):
     input_geometry = shape(selected_feature['geometry'])
-    wkt_representation = input_geometry.wkt
-    s2_tokens = wkt_to_s2(wkt_representation)
-
     center_lat, center_lon = get_geometry_center(input_geometry)
     st.session_state.lat = center_lat
     st.session_state.lon = center_lon
-    
+
     m = create_base_map(center_lat, center_lon)
     folium.GeoJson(selected_feature).add_to(m)
     Fullscreen(position="topright", title="Expand me", title_cancel="Exit me", force_separate_button=True).add_to(m)
@@ -82,7 +83,6 @@ def display_selected_feature(selected_feature):
     st.session_state.map_data = st_folium(m, width=1200, height=800)#, returned_objects=[])
     # print(st.session_state.map_data)
 
-    st.session_state.s2_tokens = s2_tokens
     st.session_state.input_geometry = input_geometry
 
     # Update info box visibility whenever we display a feature
@@ -105,32 +105,46 @@ def create_base_map(lat, lon):
     ).add_to(m)
     return m
 
-def download_and_process_gob_data(s2_tokens, input_geometry):
-    user_warning = st.sidebar.empty()  
+def download_and_process_gob_data(input_geometry):
+    user_warning = st.sidebar.empty()
+    if input_geometry is None:
+        user_warning.warning("Please select a feature before fetching building data.")
+        return
+    user_warning.info("Fetching building data from Google Earth Engine. Please wait...")
 
-    for s2_token in s2_tokens:
-        st.session_state.progress_message = f"Downloading GOB data for S2 token: {s2_token}. Please wait..."
-        user_warning.info(st.session_state.progress_message)
+    try:
+        result = fetch_buildings_from_gee(input_geometry)
+    except Exception as e:
+        user_warning.empty()
+        st.sidebar.error("Unable to fetch building data from Google Earth Engine.")
+        st.sidebar.error(str(e))
+        return
 
-        try:
-            gob_data_compressed = download_data_from_s2_code(s2_token, data_dir)
-            gob_filepath = uncompress(gob_data_compressed, delete_compressed=False)
-        except Exception as e:
-            st.error(f"Detailed error: {str(e)}")
-            print(e)
-            raise
-
-    user_warning.info("Filtering GOB data...")
-    load_and_filter_gob_data_streaming(gob_filepath, input_geometry)
     user_warning.empty()
+
+    st.session_state.building_count = result.building_count
+    st.session_state.avg_confidence = result.avg_confidence
+    st.session_state.filtered_gob_data = result.geojson
+    st.session_state.filtered_gob_geojson = json.dumps(result.geojson, separators=(',', ':'))
+    st.session_state.info_box_visible = True
+    st.session_state.data_truncated = result.truncated
+    st.session_state.feature_limit = result.limit
+
+    st.rerun()
 
 def display_fixed_info_box():
     with st.sidebar.expander("GOB Data Summary", expanded=True):
         st.metric(label="Location", value=st.session_state.selected_feature_name, label_visibility="hidden")
         st.write(f"Lat/long: {st.session_state.lat:.6f}, {st.session_state.lon:.6f}")
-        st.metric(label="Total of buildings (% confidence level)", 
+        st.metric(label="Total of buildings (% confidence level)",
                  value=f"{st.session_state.building_count} ({st.session_state.avg_confidence:.2f})")
-        
+
+        if st.session_state.data_truncated:
+            st.warning(
+                "The number of buildings exceeds the display limit. Only the first "
+                f"{st.session_state.feature_limit} features are shown."
+            )
+
         if hasattr(st.session_state, 'filtered_gob_geojson') and st.session_state.filtered_gob_geojson:
             geojson_bytes = BytesIO(st.session_state.filtered_gob_geojson.encode("utf-8"))
             st.download_button(
@@ -146,6 +160,11 @@ def display_fixed_info_box():
 
 def main():
     setup_app()
+    try:
+        initialize_earth_engine()
+    except Exception as e:
+        st.sidebar.error(str(e))
+
     uploaded_file = st.sidebar.file_uploader("Upload a GeoJSON file", type="geojson")
     initialize_session_state()
 
@@ -175,7 +194,7 @@ def main():
         #st.sidebar.write(st.session_state.imagery_dates)
 
         if st.sidebar.button("Fetch GOB Data", key="download_gob_button"):
-            download_and_process_gob_data(st.session_state.s2_tokens, st.session_state.input_geometry)
+            download_and_process_gob_data(st.session_state.input_geometry)
             
         if st.session_state.info_box_visible:
             display_fixed_info_box()
