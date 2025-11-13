@@ -1,7 +1,7 @@
 [project]
 name = "openbuildings-app"
-version = "0.1.0"
-description = "Streamlit app for exploring building footprints from Google Earth Engine Open Buildings dataset"
+version = "0.2.0"
+description = "Streamlit app for exploring building footprints from Overture Maps Buildings dataset"
 authors = [
     {name = "belisards", email = "adrianobf@gmail.com"}
 ]
@@ -16,7 +16,11 @@ dependencies = [
     "pyproj>=3.7.0",
     "ipython>=8.29.0",
     "tqdm>=4.66.6",
-    "earthengine-api>=0.1.401",
+    "duckdb>=1.0.0",
+    "pandas>=2.0.0",
+    "overturemaps>=0.17.0",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
 ]
 
 [project.optional-dependencies]

@@ -7,29 +7,24 @@ from shapely.geometry import shape
 from pyproj import Transformer
 from io import BytesIO
 import json
-from google_openbuildings import (
+from overture_buildings import (
     DEFAULT_FEATURE_LIMIT,
-    fetch_buildings_from_gee,
-    initialize_earth_engine,
-    is_authenticated,
-    authenticate_earth_engine,
-    clear_credentials,
+    fetch_buildings_from_overture,
 )
 from map_features import *
 
-APP_TITLE = "Open Buildings Explorer"
+APP_TITLE = "Overture Buildings Explorer"
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 
 def setup_app():
     # st.title(APP_TITLE)
-    st.sidebar.title("Open Buildings Explorer")
+    st.sidebar.title("Overture Buildings Explorer")
 
 def initialize_session_state():
     for key, default in {
         'map_data': None,
-        'filtered_gob_data': None,
+        'filtered_building_data': None,
         'building_count': 0,
-        'avg_confidence': 0.0,
         'imagery_dates': [],
         'selected_feature_name': None,
         'info_box_visible': False,
@@ -39,7 +34,7 @@ def initialize_session_state():
         'bounds': None,
         'zoom': 0,
         'data_truncated': False,
-        'feature_limit': DEFAULT_FEATURE_LIMIT,
+        'feature_limit': 1000000,  # Very high limit - effectively unlimited
     }.items():
         if key not in st.session_state:
             st.session_state[key] = default
@@ -52,10 +47,9 @@ def process_uploaded_file(uploaded_file):
         selected_feature_name = st.sidebar.selectbox("Select a feature to display", feature_names)
 
         if st.session_state.selected_feature_name != selected_feature_name:
-            st.session_state.filtered_gob_data = None
-            st.session_state.filtered_gob_geojson = None
+            st.session_state.filtered_building_data = None
+            st.session_state.filtered_building_geojson = None
             st.session_state.building_count = 0
-            st.session_state.avg_confidence = 0.0
             st.session_state.info_box_visible = False
             st.session_state.data_truncated = False
             st.session_state.feature_limit = DEFAULT_FEATURE_LIMIT
@@ -80,8 +74,8 @@ def display_selected_feature(selected_feature):
     folium.GeoJson(selected_feature).add_to(m)
     Fullscreen(position="topright", title="Expand me", title_cancel="Exit me", force_separate_button=True).add_to(m)
 
-    if st.session_state.filtered_gob_data is not None:
-        folium.GeoJson(st.session_state.filtered_gob_data).add_to(m)
+    if st.session_state.filtered_building_data is not None:
+        folium.GeoJson(st.session_state.filtered_building_data).add_to(m)
 
     st.session_state.map_data = st_folium(m, width=1200, height=800)#, returned_objects=[])
     # print(st.session_state.map_data)
@@ -108,39 +102,50 @@ def create_base_map(lat, lon):
     ).add_to(m)
     return m
 
-def download_and_process_gob_data(input_geometry):
-    user_warning = st.sidebar.empty()
+def download_and_process_building_data(input_geometry):
     if input_geometry is None:
-        user_warning.warning("Please select a feature before fetching building data.")
-        return
-    user_warning.info("Fetching building data from Google Earth Engine. Please wait...")
-
-    try:
-        result = fetch_buildings_from_gee(input_geometry)
-    except Exception as e:
-        user_warning.empty()
-        st.sidebar.error("Unable to fetch building data from Google Earth Engine.")
-        st.sidebar.error(str(e))
+        st.sidebar.warning("Please select a feature before fetching building data.")
         return
 
-    user_warning.empty()
+    with st.sidebar.status("Fetching building data from Overture Maps...", expanded=True) as status:
+        message_placeholder = st.empty()
+        progress_bar = st.progress(0)
 
-    st.session_state.building_count = result.building_count
-    st.session_state.avg_confidence = result.avg_confidence
-    st.session_state.filtered_gob_data = result.geojson
-    st.session_state.filtered_gob_geojson = json.dumps(result.geojson, separators=(',', ':'))
-    st.session_state.info_box_visible = True
-    st.session_state.data_truncated = result.truncated
-    st.session_state.feature_limit = result.limit
+        def update_progress(message, progress):
+            message_placeholder.write(message)
+            progress_bar.progress(progress)
+
+        try:
+            result = fetch_buildings_from_overture(
+                input_geometry,
+                limit=st.session_state.feature_limit,
+                progress_callback=update_progress
+            )
+
+            st.session_state.building_count = result.building_count
+            st.session_state.filtered_building_data = result.geojson
+            st.session_state.filtered_building_geojson = json.dumps(result.geojson, separators=(',', ':'))
+            st.session_state.info_box_visible = True
+            st.session_state.data_truncated = result.truncated
+            st.session_state.feature_limit = result.limit
+
+            status.update(label="✓ Data fetched successfully!", state="complete", expanded=False)
+
+        except Exception as e:
+            progress_bar.empty()
+            message_placeholder.empty()
+            status.update(label="✗ Failed to fetch data", state="error", expanded=True)
+            st.error("Unable to fetch building data from Overture Maps.")
+            st.error(str(e))
+            return
 
     st.rerun()
 
 def display_fixed_info_box():
-    with st.sidebar.expander("GOB Data Summary", expanded=True):
+    with st.sidebar.expander("Building Data Summary", expanded=True):
         st.metric(label="Location", value=st.session_state.selected_feature_name, label_visibility="hidden")
         st.write(f"Lat/long: {st.session_state.lat:.6f}, {st.session_state.lon:.6f}")
-        st.metric(label="Total of buildings (% confidence level)",
-                 value=f"{st.session_state.building_count} ({st.session_state.avg_confidence:.2f})")
+        st.metric(label="Total buildings", value=f"{st.session_state.building_count}")
 
         if st.session_state.data_truncated:
             st.warning(
@@ -148,87 +153,49 @@ def display_fixed_info_box():
                 f"{st.session_state.feature_limit} features are shown."
             )
 
-        if hasattr(st.session_state, 'filtered_gob_geojson') and st.session_state.filtered_gob_geojson:
-            geojson_bytes = BytesIO(st.session_state.filtered_gob_geojson.encode("utf-8"))
+        if hasattr(st.session_state, 'filtered_building_geojson') and st.session_state.filtered_building_geojson:
+            geojson_bytes = BytesIO(st.session_state.filtered_building_geojson.encode("utf-8"))
             st.download_button(
                 label="Download GeoJSON",
                 data=geojson_bytes,
-                file_name="filtered_gob_data.geojson",
+                file_name="overture_buildings.geojson",
                 mime="application/geo+json"
             )
 
+    if st.session_state.filtered_building_data:
+        display_building_attributes()
 
-    # Display imagery dates if zoom level is sufficient
 
+def display_building_attributes():
+    with st.sidebar.expander("Sample Building Info", expanded=False):
+        sample_feature = st.session_state.filtered_building_data['features'][0] if st.session_state.filtered_building_data['features'] else None
 
-def show_authentication_screen():
-    st.sidebar.title("🔐 Authentication Required")
-    st.sidebar.markdown("""
-    To use this application, you need to authenticate with Google Earth Engine.
+        if sample_feature:
+            props = sample_feature['properties']
 
-    **Step 1:** Enter your Google Cloud Project ID that has Earth Engine enabled.
+            if props.get('height'):
+                st.write(f"🏢 Height: {props['height']:.1f}m")
 
-    **Step 2:** Click authenticate to sign in with your Google account.
-    """)
+            if props.get('num_floors'):
+                st.write(f"📊 Floors: {props['num_floors']}")
 
-    if 'ee_project_id' not in st.session_state:
-        st.session_state.ee_project_id = ""
+            if props.get('class'):
+                st.write(f"🏗️ Class: {props['class']}")
 
-    project_id = st.sidebar.text_input(
-        "Google Cloud Project ID",
-        value=st.session_state.ee_project_id,
-        placeholder="my-project-123456",
-        help="Your GCP project ID with Earth Engine API enabled"
-    )
+            if props.get('latitude') and props.get('longitude'):
+                st.write(f"📌 Location: {props['latitude']:.4f}, {props['longitude']:.4f}")
 
-    st.sidebar.markdown("[How to find your Project ID?](https://developers.google.com/earth-engine/guides/access)")
+            if props.get('sources'):
+                sources = props['sources']
+                if isinstance(sources, list) and sources:
+                    dataset = sources[0].get('dataset', 'Unknown')
+                    st.write(f"📚 Source: {dataset}")
 
-    if st.sidebar.button("🔑 Authenticate with Google Earth Engine", type="primary", key="auth_button", disabled=not project_id):
-        st.session_state.ee_project_id = project_id
-        with st.sidebar.status("Authenticating...", expanded=True) as status:
-            st.write("Opening browser for authentication...")
-            try:
-                authenticate_earth_engine(project_id)
-                status.update(label="✓ Authentication successful!", state="complete", expanded=False)
-                st.sidebar.success("Authentication complete! Reloading app...")
-                st.rerun()
-            except Exception as e:
-                status.update(label="✗ Authentication failed", state="error", expanded=True)
-                st.sidebar.error(f"Authentication failed: {str(e)}")
-
-    st.info("👈 Please enter your Project ID and authenticate to continue.")
+            st.info(f"Showing sample from {len(st.session_state.filtered_building_data['features'])} buildings")
 
 
 def main():
     setup_app()
-
-    if 'ee_project_id' not in st.session_state:
-        st.session_state.ee_project_id = ""
-
-    if not is_authenticated():
-        show_authentication_screen()
-        return
-
-    project_id = st.session_state.ee_project_id
-    if not project_id:
-        st.sidebar.warning("⚠️ Project ID Missing")
-        st.sidebar.info("Please re-authenticate to set your project ID.")
-        if st.sidebar.button("🔄 Re-authenticate", type="primary", key="reauth_button"):
-            clear_credentials()
-            st.rerun()
-        return
-
-    try:
-        initialize_earth_engine(project_id)
-    except Exception as e:
-        st.sidebar.error("⚠️ Earth Engine Initialization Error")
-        st.sidebar.error(str(e))
-        st.sidebar.info("This might be due to an incorrect project ID or expired credentials.")
-        if st.sidebar.button("🔄 Try Re-authenticating", type="primary", key="reauth_button"):
-            clear_credentials()
-            st.session_state.ee_project_id = ""
-            st.rerun()
-        return
 
     uploaded_file = st.sidebar.file_uploader("Upload a GeoJSON file", type="geojson")
     initialize_session_state()
@@ -249,7 +216,7 @@ def main():
             if dates:
                 # change to str
                 dates = ", ".join(dates)
-                print(dates)
+                # print(dates)
                 st.session_state.imagery_dates = dates
                 # write
                 st.sidebar.write(f"Imagery dates: {dates}")
@@ -258,8 +225,8 @@ def main():
             # write
         #st.sidebar.write(st.session_state.imagery_dates)
 
-        if st.sidebar.button("Fetch GOB Data", key="download_gob_button"):
-            download_and_process_gob_data(st.session_state.input_geometry)
+        if st.sidebar.button("Fetch Overture Buildings", key="download_building_button"):
+            download_and_process_building_data(st.session_state.input_geometry)
             
         if st.session_state.info_box_visible:
             display_fixed_info_box()
