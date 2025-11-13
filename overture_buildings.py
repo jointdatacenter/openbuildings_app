@@ -182,21 +182,26 @@ def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_L
         print("[Overture] This may take 2-10 minutes for the first query...")
 
         if progress_callback:
-            progress_callback("📦 Streaming data from S3... (this may take several minutes)", 10)
+            progress_callback("📦 Connecting to S3 and starting stream...", 5)
 
         batches = []
         total_count = 0
+        batch_count = 0
 
         for i, batch in enumerate(reader):
             batch_size = len(batch)
             total_count += batch_size
+            batch_count += 1
             batches.append(batch)
 
-            if i % 3 == 0:
-                print(f"[Overture] Fetched {total_count} buildings so far...")
+            if i == 0 and progress_callback:
+                progress_callback(f"📦 First batch received! Streaming data from S3...", 10)
+
+            if i % 2 == 0:
+                print(f"[Overture] Batch {batch_count}: Fetched {total_count} buildings so far...")
                 if progress_callback:
                     progress = min(10 + int((total_count / max(limit, 1000)) * 50), 60)
-                    progress_callback(f"📦 Downloading... {total_count} buildings fetched", progress)
+                    progress_callback(f"📦 Downloading batch {batch_count}... {total_count} buildings fetched", progress)
 
             if total_count >= limit:
                 print(f"[Overture] Reached limit of {limit}, stopping...")

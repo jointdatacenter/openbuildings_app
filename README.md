@@ -2,10 +2,6 @@
 
 Streamlit app for exploring building footprints from the [Overture Maps Buildings dataset](https://docs.overturemaps.org/guides/buildings/).
 
-## To-do
-
-- Instead of "Sample Building Info" show aggregated summary of data
-
 ## Features
 
 - Upload GeoJSON files to define areas of interest

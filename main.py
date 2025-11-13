@@ -167,31 +167,49 @@ def display_fixed_info_box():
 
 
 def display_building_attributes():
-    with st.sidebar.expander("Sample Building Info", expanded=False):
-        sample_feature = st.session_state.filtered_building_data['features'][0] if st.session_state.filtered_building_data['features'] else None
+    with st.sidebar.expander("Building Attributes Summary", expanded=False):
+        features = st.session_state.filtered_building_data['features']
 
-        if sample_feature:
-            props = sample_feature['properties']
+        if features:
+            heights = [f['properties'].get('height') for f in features if f['properties'].get('height')]
+            floors = [f['properties'].get('num_floors') for f in features if f['properties'].get('num_floors')]
+            classes = [f['properties'].get('class') for f in features if f['properties'].get('class')]
+            sources = []
+            for f in features:
+                props = f['properties']
+                if props.get('sources') and isinstance(props['sources'], list) and props['sources']:
+                    dataset = props['sources'][0].get('dataset', 'Unknown')
+                    sources.append(dataset)
 
-            if props.get('height'):
-                st.write(f"🏢 Height: {props['height']:.1f}m")
+            if heights:
+                avg_height = sum(heights) / len(heights)
+                min_height = min(heights)
+                max_height = max(heights)
+                st.write(f"🏢 **Height** ({len(heights)} buildings)")
+                st.write(f"   Avg: {avg_height:.1f}m | Min: {min_height:.1f}m | Max: {max_height:.1f}m")
 
-            if props.get('num_floors'):
-                st.write(f"📊 Floors: {props['num_floors']}")
+            if floors:
+                avg_floors = sum(floors) / len(floors)
+                min_floors = min(floors)
+                max_floors = max(floors)
+                st.write(f"📊 **Floors** ({len(floors)} buildings)")
+                st.write(f"   Avg: {avg_floors:.1f} | Min: {min_floors} | Max: {max_floors}")
 
-            if props.get('class'):
-                st.write(f"🏗️ Class: {props['class']}")
+            if classes:
+                class_counts = {}
+                for c in classes:
+                    class_counts[c] = class_counts.get(c, 0) + 1
+                st.write(f"🏗️ **Building Classes** ({len(classes)} classified)")
+                for cls, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+                    st.write(f"   {cls}: {count}")
 
-            if props.get('latitude') and props.get('longitude'):
-                st.write(f"📌 Location: {props['latitude']:.4f}, {props['longitude']:.4f}")
-
-            if props.get('sources'):
-                sources = props['sources']
-                if isinstance(sources, list) and sources:
-                    dataset = sources[0].get('dataset', 'Unknown')
-                    st.write(f"📚 Source: {dataset}")
-
-            st.info(f"Showing sample from {len(st.session_state.filtered_building_data['features'])} buildings")
+            if sources:
+                source_counts = {}
+                for s in sources:
+                    source_counts[s] = source_counts.get(s, 0) + 1
+                st.write(f"📚 **Data Sources**")
+                for src, count in sorted(source_counts.items(), key=lambda x: x[1], reverse=True):
+                    st.write(f"   {src}: {count} buildings")
 
 
 def main():
