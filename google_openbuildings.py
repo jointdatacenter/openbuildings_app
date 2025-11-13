@@ -50,7 +50,27 @@ def _build_service_account_credentials(service_account: str, private_key: str | 
     )
 
 
-def initialize_earth_engine() -> None:
+def is_authenticated() -> bool:
+    """Check if Earth Engine credentials exist."""
+    credentials_path = os.path.expanduser("~/.config/earthengine/credentials")
+    return os.path.exists(credentials_path)
+
+
+def clear_credentials() -> None:
+    """Remove saved Earth Engine credentials."""
+    global _ee_initialized
+    _ee_initialized = False
+    credentials_path = os.path.expanduser("~/.config/earthengine/credentials")
+    if os.path.exists(credentials_path):
+        os.remove(credentials_path)
+
+
+def authenticate_earth_engine(project_id: str | None = None) -> None:
+    """Trigger the Earth Engine authentication flow."""
+    ee.Authenticate(force=True)
+
+
+def initialize_earth_engine(project_id: str | None = None) -> None:
     """Initialise the Earth Engine client if it has not already been initialised."""
 
     global _ee_initialized
@@ -61,20 +81,23 @@ def initialize_earth_engine() -> None:
     service_account = os.getenv("EE_SERVICE_ACCOUNT")
     private_key = os.getenv("EE_PRIVATE_KEY")
     key_path = os.getenv("EE_CREDENTIALS_PATH")
+    ee_project = project_id or os.getenv("EE_PROJECT")
 
     try:
         if service_account:
             credentials = _build_service_account_credentials(service_account, private_key, key_path)
-            ee.Initialize(credentials)
+            ee.Initialize(credentials, project=ee_project)
         else:
-            # Attempt to rely on the default credentials stored on disk (if any).
-            ee.Initialize()
+            if ee_project:
+                ee.Initialize(project=ee_project)
+            else:
+                ee.Initialize()
         _ee_initialized = True
-    except Exception as exc:  # pragma: no cover - pass through to Streamlit
+    except Exception as exc:
         _ee_initialized = False
         raise EarthEngineInitializationError(
-            "Failed to initialise Google Earth Engine. Provide EE_SERVICE_ACCOUNT and EE_PRIVATE_KEY "
-            "environment variables or authenticate locally with ee.Authenticate()."
+            "Failed to initialise Google Earth Engine. Provide EE_PROJECT environment variable "
+            "or EE_SERVICE_ACCOUNT and EE_PRIVATE_KEY environment variables."
         ) from exc
 
 

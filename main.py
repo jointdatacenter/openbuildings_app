@@ -11,6 +11,9 @@ from google_openbuildings import (
     DEFAULT_FEATURE_LIMIT,
     fetch_buildings_from_gee,
     initialize_earth_engine,
+    is_authenticated,
+    authenticate_earth_engine,
+    clear_credentials,
 )
 from map_features import *
 
@@ -158,12 +161,74 @@ def display_fixed_info_box():
     # Display imagery dates if zoom level is sufficient
 
 
+def show_authentication_screen():
+    st.sidebar.title("🔐 Authentication Required")
+    st.sidebar.markdown("""
+    To use this application, you need to authenticate with Google Earth Engine.
+
+    **Step 1:** Enter your Google Cloud Project ID that has Earth Engine enabled.
+
+    **Step 2:** Click authenticate to sign in with your Google account.
+    """)
+
+    if 'ee_project_id' not in st.session_state:
+        st.session_state.ee_project_id = ""
+
+    project_id = st.sidebar.text_input(
+        "Google Cloud Project ID",
+        value=st.session_state.ee_project_id,
+        placeholder="my-project-123456",
+        help="Your GCP project ID with Earth Engine API enabled"
+    )
+
+    st.sidebar.markdown("[How to find your Project ID?](https://developers.google.com/earth-engine/guides/access)")
+
+    if st.sidebar.button("🔑 Authenticate with Google Earth Engine", type="primary", key="auth_button", disabled=not project_id):
+        st.session_state.ee_project_id = project_id
+        with st.sidebar.status("Authenticating...", expanded=True) as status:
+            st.write("Opening browser for authentication...")
+            try:
+                authenticate_earth_engine(project_id)
+                status.update(label="✓ Authentication successful!", state="complete", expanded=False)
+                st.sidebar.success("Authentication complete! Reloading app...")
+                st.rerun()
+            except Exception as e:
+                status.update(label="✗ Authentication failed", state="error", expanded=True)
+                st.sidebar.error(f"Authentication failed: {str(e)}")
+
+    st.info("👈 Please enter your Project ID and authenticate to continue.")
+
+
 def main():
     setup_app()
+
+    if 'ee_project_id' not in st.session_state:
+        st.session_state.ee_project_id = ""
+
+    if not is_authenticated():
+        show_authentication_screen()
+        return
+
+    project_id = st.session_state.ee_project_id
+    if not project_id:
+        st.sidebar.warning("⚠️ Project ID Missing")
+        st.sidebar.info("Please re-authenticate to set your project ID.")
+        if st.sidebar.button("🔄 Re-authenticate", type="primary", key="reauth_button"):
+            clear_credentials()
+            st.rerun()
+        return
+
     try:
-        initialize_earth_engine()
+        initialize_earth_engine(project_id)
     except Exception as e:
+        st.sidebar.error("⚠️ Earth Engine Initialization Error")
         st.sidebar.error(str(e))
+        st.sidebar.info("This might be due to an incorrect project ID or expired credentials.")
+        if st.sidebar.button("🔄 Try Re-authenticating", type="primary", key="reauth_button"):
+            clear_credentials()
+            st.session_state.ee_project_id = ""
+            st.rerun()
+        return
 
     uploaded_file = st.sidebar.file_uploader("Upload a GeoJSON file", type="geojson")
     initialize_session_state()
