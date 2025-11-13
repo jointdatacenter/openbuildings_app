@@ -152,9 +152,13 @@ def main():
     if uploaded_file:
         process_uploaded_file(uploaded_file)
         # get imagery dates
-        bounds = st.session_state.map_data['bounds']
-        # print(bounds)
-        zoom_level = st.session_state.map_data['zoom']
+        if st.session_state.map_data is not None:
+            bounds = st.session_state.map_data.get('bounds')
+            zoom_level = st.session_state.map_data.get('zoom', 0)
+        else:
+            bounds = None
+            zoom_level = 0
+
         if zoom_level >= 12 and bounds:
             transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
             sw_x, sw_y = transformer.transform(bounds['_southWest']['lng'], bounds['_southWest']['lat'])
