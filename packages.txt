@@ -1,3 +1,5 @@
 cmake
 libssl-dev
 swig
+libproj-dev
+proj-bin
