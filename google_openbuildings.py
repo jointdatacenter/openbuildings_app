@@ -11,13 +11,13 @@ from io import StringIO
 import json
 import psutil
 import gc
-
-from st_files_connection import FilesConnection
+import requests
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 BUILDING_DOWNLOAD_PATH = 'gs://open-buildings-data/v3/polygons_s2_level_6_gzip_no_header'
+BUILDING_DOWNLOAD_URL = 'https://storage.googleapis.com/open-buildings-data/v3/polygons_s2_level_6_gzip_no_header'
 
 def wkt_to_s2(your_own_wkt_polygon: str) -> List[str]:
     """Takes a WKT polygon, converts to a geopandas GeoDataFrame, and returns S2 covering tokens."""
@@ -91,51 +91,42 @@ def download_data_from_s2_code(s2_code: str, data_dir: str) -> Optional[str]:
         return output_path
 
     try:
-        # Construct the GCS path
-        conn = st.connection('gcs', type=FilesConnection)
-        gcs_path = os.path.join(BUILDING_DOWNLOAD_PATH, f'{s2_code}_buildings.csv.gz')
-        print(gcs_path)
-        # st.sidebar.write(f"Downloading data from: {gcs_path}")
-        
-        # Open GCS file and get its total size
-        with conn.open(gcs_path, 'rb') as f:
-            if not hasattr(f, 'size'):
-                st.warning("File size information not available")
-                total_size = 0
-            else:
-                total_size = f.size
-                # st.sidebar.write(f"Total file size: {total_size} bytes")
-            
-            # Initialize progress bar
-            status_text = st.sidebar.empty()
-            progress_bar = st.sidebar.progress(0)
-            
-            # Download the file in chunks
-            with open(output_path, 'wb') as out:
-                bytes_downloaded = 0
-                chunk_size = 65536  # 64KB chunks for better efficiency
-                
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
-                        
+        # Construct the HTTP URL for public GCS data
+        download_url = f'{BUILDING_DOWNLOAD_URL}/{s2_code}_buildings.csv.gz'
+        print(download_url)
+
+        # Initialize progress bar
+        status_text = st.sidebar.empty()
+        progress_bar = st.sidebar.progress(0)
+
+        # Download with streaming
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status()
+
+        # Get total file size
+        total_size = int(response.headers.get('content-length', 0))
+
+        # Download the file in chunks
+        with open(output_path, 'wb') as out:
+            bytes_downloaded = 0
+            chunk_size = 65536  # 64KB chunks
+
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
                     out.write(chunk)
                     bytes_downloaded += len(chunk)
-                    
+
                     if total_size > 0:
                         progress = min(1.0, bytes_downloaded / total_size)
                         progress_bar.progress(progress)
-                        # status_text.write(f"Downloaded {bytes_downloaded} bytes out of {total_size} bytes")
-                        # also show as megabytes
                         status_text.write(f"Downloaded {bytes_downloaded/1e6:.2f} MB out of {total_size/1e6:.2f} MB")
                     else:
-                        status_text.write(f"Downloaded {bytes_downloaded} bytes")
+                        status_text.write(f"Downloaded {bytes_downloaded/1e6:.2f} MB")
 
         # Clear status elements
         status_text.empty()
         progress_bar.empty()
-        
+
         # Verify the downloaded file exists and is not empty
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             st.success(f"Download completed: {output_path}")
