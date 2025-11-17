@@ -6,7 +6,7 @@ authors = [
     {name = "belisards", email = "adrianobf@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
     "streamlit>=1.39.0",
     "folium>=0.18.0",
