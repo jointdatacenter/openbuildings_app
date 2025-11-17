@@ -4,6 +4,7 @@ from streamlit_folium import st_folium
 from folium.plugins import Fullscreen
 import geojson
 from shapely.geometry import shape
+from shapely.ops import unary_union
 from pyproj import Transformer
 from io import BytesIO
 import json
@@ -26,7 +27,7 @@ def initialize_session_state():
         'filtered_building_data': None,
         'building_count': 0,
         'imagery_dates': [],
-        'selected_feature_name': None,
+        'selected_feature_names': [],
         'info_box_visible': False,
         'lat': 0,
         'lon': 0,
@@ -34,7 +35,7 @@ def initialize_session_state():
         'bounds': None,
         'zoom': 0,
         'data_truncated': False,
-        'feature_limit': 1000000,  # Very high limit - effectively unlimited
+        'feature_limit': 1000000,
     }.items():
         if key not in st.session_state:
             st.session_state[key] = default
@@ -43,10 +44,14 @@ def process_uploaded_file(uploaded_file):
     try:
         geojson_data = geojson.load(uploaded_file)
         features = geojson_data['features']
-        feature_names = [feature['properties'].get('name', f'Feature {i}') for i, feature in enumerate(features)]
-        selected_feature_name = st.sidebar.selectbox("Select a feature to display", feature_names)
+        feature_names = sorted([feature['properties'].get('name', f'Feature {i}') for i, feature in enumerate(features)])
+        selected_feature_names = st.sidebar.multiselect(
+            "Select features to display",
+            feature_names,
+            default=st.session_state.selected_feature_names if st.session_state.selected_feature_names else None
+        )
 
-        if st.session_state.selected_feature_name != selected_feature_name:
+        if st.session_state.selected_feature_names != selected_feature_names:
             st.session_state.filtered_building_data = None
             st.session_state.filtered_building_geojson = None
             st.session_state.building_count = 0
@@ -54,36 +59,46 @@ def process_uploaded_file(uploaded_file):
             st.session_state.data_truncated = False
             st.session_state.feature_limit = DEFAULT_FEATURE_LIMIT
 
-        st.session_state.selected_feature_name = selected_feature_name
-        selected_feature = next((feature for feature in features if feature['properties'].get('name') == selected_feature_name), None)
+        st.session_state.selected_feature_names = selected_feature_names
 
-        if selected_feature:
-            display_selected_feature(selected_feature)
+        if selected_feature_names:
+            selected_features = [feature for feature in features if feature['properties'].get('name') in selected_feature_names]
+            display_selected_features(selected_features)
 
     except Exception as e:
         st.sidebar.error(f"Error processing GeoJSON file: {str(e)}")
         st.sidebar.error("Please make sure your GeoJSON file is properly formatted.")
 
-def display_selected_feature(selected_feature):
-    input_geometry = shape(selected_feature['geometry'])
+def display_selected_features(selected_features):
+    geometries = [shape(feature['geometry']) for feature in selected_features]
+
+    if len(geometries) == 1:
+        input_geometry = geometries[0]
+    else:
+        input_geometry = unary_union(geometries)
+
     center_lat, center_lon = get_geometry_center(input_geometry)
     st.session_state.lat = center_lat
     st.session_state.lon = center_lon
 
     m = create_base_map(center_lat, center_lon)
-    folium.GeoJson(selected_feature).add_to(m)
+
+    for feature in selected_features:
+        folium.GeoJson(feature, style_function=lambda x: {
+            'fillColor': '#3388ff',
+            'color': '#3388ff',
+            'weight': 2,
+            'fillOpacity': 0.2
+        }).add_to(m)
+
     Fullscreen(position="topright", title="Expand me", title_cancel="Exit me", force_separate_button=True).add_to(m)
 
     if st.session_state.filtered_building_data is not None:
         folium.GeoJson(st.session_state.filtered_building_data).add_to(m)
 
-    st.session_state.map_data = st_folium(m, width=1200, height=800)#, returned_objects=[])
-    # print(st.session_state.map_data)
+    st.session_state.map_data = st_folium(m, width=1200, height=800)
 
     st.session_state.input_geometry = input_geometry
-
-    # Update info box visibility whenever we display a feature
-    # st.session_state.info_box_visible = True
 
 def get_geometry_center(geometry):
     if geometry.geom_type == 'Point':
@@ -143,7 +158,13 @@ def download_and_process_building_data(input_geometry):
 
 def display_fixed_info_box():
     with st.sidebar.expander("Building Data Summary", expanded=True):
-        st.metric(label="Location", value=st.session_state.selected_feature_name, label_visibility="hidden")
+        if st.session_state.selected_feature_names:
+            num_features = len(st.session_state.selected_feature_names)
+            if num_features == 1:
+                st.metric(label="Location", value=st.session_state.selected_feature_names[0], label_visibility="hidden")
+            else:
+                st.metric(label="Selected Features", value=f"{num_features} features", label_visibility="hidden")
+                st.write(", ".join(st.session_state.selected_feature_names))
         st.write(f"Lat/long: {st.session_state.lat:.6f}, {st.session_state.lon:.6f}")
         st.metric(label="Total buildings", value=f"{st.session_state.building_count}")
 
@@ -220,28 +241,23 @@ def main():
 
     if uploaded_file:
         process_uploaded_file(uploaded_file)
-        # get imagery dates
-        bounds = st.session_state.map_data['bounds']
-        # print(bounds)
-        zoom_level = st.session_state.map_data['zoom']
-        if zoom_level >= 12 and bounds:
-            transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
-            sw_x, sw_y = transformer.transform(bounds['_southWest']['lng'], bounds['_southWest']['lat'])
-            ne_x, ne_y = transformer.transform(bounds['_northEast']['lng'], bounds['_northEast']['lat'])
-            # print(sw_x, sw_y, ne_x, ne_y)
 
-            dates = get_imagery_dates((sw_x, sw_y, ne_x, ne_y), zoom_level)
-            if dates:
-                # change to str
-                dates = ", ".join(dates)
-                # print(dates)
-                st.session_state.imagery_dates = dates
-                # write
-                st.sidebar.write(f"Imagery dates: {dates}")
-        else:
-            st.session_state.imagery_dates = f"Curent zoom level: {zoom_level} - Imagery dates are only available at zoom level 12 or higher."
-            # write
-        #st.sidebar.write(st.session_state.imagery_dates)
+        if st.session_state.map_data is not None:
+            bounds = st.session_state.map_data.get('bounds')
+            zoom_level = st.session_state.map_data.get('zoom', 0)
+
+            if zoom_level >= 12 and bounds:
+                transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+                sw_x, sw_y = transformer.transform(bounds['_southWest']['lng'], bounds['_southWest']['lat'])
+                ne_x, ne_y = transformer.transform(bounds['_northEast']['lng'], bounds['_northEast']['lat'])
+
+                dates = get_imagery_dates((sw_x, sw_y, ne_x, ne_y), zoom_level)
+                if dates:
+                    dates = ", ".join(dates)
+                    st.session_state.imagery_dates = dates
+                    st.sidebar.write(f"Imagery dates: {dates}")
+            elif zoom_level > 0:
+                st.session_state.imagery_dates = f"Curent zoom level: {zoom_level} - Imagery dates are only available at zoom level 12 or higher."
 
         if st.sidebar.button("Fetch Overture Buildings", key="download_building_button"):
             download_and_process_building_data(st.session_state.input_geometry)
