@@ -2,8 +2,11 @@
 import requests
 import json
 import streamlit as st
+from typing import Tuple
 
-def get_imagery_dates(bounds, zoom_level):
+
+@st.cache_data(ttl=3600 * 24 * 30, show_spinner=False)  # Cache for 30 days
+def get_imagery_dates(bounds: Tuple[float, float, float, float], zoom_level: int):
     """
     Query ESRI World Imagery service for image dates within the given bounds.
     """

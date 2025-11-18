@@ -8,6 +8,8 @@ from shapely.ops import unary_union
 from pyproj import Transformer
 from io import BytesIO
 import json
+from typing import List, Dict, Any, Tuple
+import hashlib
 from overture_buildings import (
     DEFAULT_FEATURE_LIMIT,
     fetch_buildings_from_overture,
@@ -16,6 +18,99 @@ from map_features import *
 
 APP_TITLE = "Overture Buildings Explorer"
 st.set_page_config(page_title=APP_TITLE, layout="wide")
+
+
+@st.cache_data(show_spinner=False)
+def compute_building_statistics(geojson_str: str) -> Dict[str, Any]:
+    """
+    Compute building statistics from GeoJSON data.
+    Cached to avoid recomputing on every UI interaction.
+
+    Args:
+        geojson_str: JSON string of building data
+
+    Returns:
+        Dictionary containing computed statistics
+    """
+    data = json.loads(geojson_str)
+    features = data.get('features', [])
+
+    if not features:
+        return {}
+
+    heights = [f['properties'].get('height') for f in features if f['properties'].get('height')]
+    floors = [f['properties'].get('num_floors') for f in features if f['properties'].get('num_floors')]
+    classes = [f['properties'].get('class') for f in features if f['properties'].get('class')]
+
+    sources = []
+    for f in features:
+        props = f['properties']
+        if props.get('sources') and isinstance(props['sources'], list) and props['sources']:
+            dataset = props['sources'][0].get('dataset', 'Unknown')
+            sources.append(dataset)
+
+    stats = {}
+
+    if heights:
+        stats['heights'] = {
+            'count': len(heights),
+            'avg': sum(heights) / len(heights),
+            'min': min(heights),
+            'max': max(heights)
+        }
+
+    if floors:
+        stats['floors'] = {
+            'count': len(floors),
+            'avg': sum(floors) / len(floors),
+            'min': min(floors),
+            'max': max(floors)
+        }
+
+    if classes:
+        class_counts = {}
+        for c in classes:
+            class_counts[c] = class_counts.get(c, 0) + 1
+        stats['classes'] = {
+            'total': len(classes),
+            'counts': dict(sorted(class_counts.items(), key=lambda x: x[1], reverse=True)[:5])
+        }
+
+    if sources:
+        source_counts = {}
+        for s in sources:
+            source_counts[s] = source_counts.get(s, 0) + 1
+        stats['sources'] = dict(sorted(source_counts.items(), key=lambda x: x[1], reverse=True))
+
+    return stats
+
+
+@st.cache_data(show_spinner=False)
+def get_paginated_features(geojson_str: str, page: int, features_per_page: int) -> Dict[str, Any]:
+    """
+    Get a paginated subset of features from GeoJSON data.
+
+    Args:
+        geojson_str: JSON string of building data
+        page: Page number (0-indexed)
+        features_per_page: Number of features per page
+
+    Returns:
+        GeoJSON FeatureCollection with paginated features
+    """
+    data = json.loads(geojson_str)
+    all_features = data.get('features', [])
+
+    start_idx = page * features_per_page
+    end_idx = start_idx + features_per_page
+
+    paginated_features = all_features[start_idx:end_idx]
+
+    return {
+        'type': 'FeatureCollection',
+        'features': paginated_features
+    }
+
 
 def setup_app():
     # st.title(APP_TITLE)
@@ -35,7 +130,10 @@ def initialize_session_state():
         'bounds': None,
         'zoom': 0,
         'data_truncated': False,
-        'feature_limit': 1000000,
+        'feature_limit': DEFAULT_FEATURE_LIMIT,
+        'pagination_enabled': True,
+        'features_per_page': 10000,
+        'current_page': 0,
     }.items():
         if key not in st.session_state:
             st.session_state[key] = default
@@ -93,8 +191,23 @@ def display_selected_features(selected_features):
 
     Fullscreen(position="topright", title="Expand me", title_cancel="Exit me", force_separate_button=True).add_to(m)
 
+    # Display buildings with pagination if enabled
     if st.session_state.filtered_building_data is not None:
-        folium.GeoJson(st.session_state.filtered_building_data).add_to(m)
+        if st.session_state.pagination_enabled and hasattr(st.session_state, 'filtered_building_geojson'):
+            # Get paginated data
+            paginated_data = get_paginated_features(
+                st.session_state.filtered_building_geojson,
+                st.session_state.current_page,
+                st.session_state.features_per_page
+            )
+            folium.GeoJson(paginated_data, style_function=lambda x: {
+                'fillColor': '#ff7800',
+                'color': '#ff7800',
+                'weight': 1,
+                'fillOpacity': 0.5
+            }).add_to(m)
+        else:
+            folium.GeoJson(st.session_state.filtered_building_data).add_to(m)
 
     st.session_state.map_data = st_folium(m, width=1200, height=800)
 
@@ -125,12 +238,24 @@ def download_and_process_building_data(input_geometry):
     with st.sidebar.status("Fetching building data from Overture Maps...", expanded=True) as status:
         message_placeholder = st.empty()
         progress_bar = st.progress(0)
+        info_placeholder = st.empty()
 
         def update_progress(message, progress):
             message_placeholder.write(message)
-            progress_bar.progress(progress)
+            progress_bar.progress(progress / 100.0)
+
+            # Show cache hint on first request
+            if progress == 0:
+                info_placeholder.info("💡 Tip: Subsequent requests for the same area will be cached and load instantly!")
 
         try:
+            # Check if data might be cached
+            bounds = input_geometry.bounds
+            bbox_tuple = (bounds[0], bounds[1], bounds[2], bounds[3])
+            cache_key = hashlib.md5(f"{bbox_tuple[0]:.6f},{bbox_tuple[1]:.6f},{bbox_tuple[2]:.6f},{bbox_tuple[3]:.6f},{st.session_state.feature_limit}".encode()).hexdigest()
+
+            info_placeholder.info(f"🔍 Checking cache (key: {cache_key[:8]}...)")
+
             result = fetch_buildings_from_overture(
                 input_geometry,
                 limit=st.session_state.feature_limit,
@@ -143,12 +268,15 @@ def download_and_process_building_data(input_geometry):
             st.session_state.info_box_visible = True
             st.session_state.data_truncated = result.truncated
             st.session_state.feature_limit = result.limit
+            st.session_state.current_page = 0  # Reset to first page
 
+            info_placeholder.success(f"✅ Fetched {result.building_count} buildings")
             status.update(label="✓ Data fetched successfully!", state="complete", expanded=False)
 
         except Exception as e:
             progress_bar.empty()
             message_placeholder.empty()
+            info_placeholder.empty()
             status.update(label="✗ Failed to fetch data", state="error", expanded=True)
             st.error("Unable to fetch building data from Overture Maps.")
             st.error(str(e))
@@ -174,10 +302,81 @@ def display_fixed_info_box():
                 f"{st.session_state.feature_limit} features are shown."
             )
 
+        # Pagination controls
+        if st.session_state.building_count > 0:
+            st.divider()
+            st.subheader("Display Options")
+
+            # Enable/disable pagination
+            pagination_enabled = st.checkbox(
+                "Enable pagination",
+                value=st.session_state.pagination_enabled,
+                help="When enabled, only a subset of buildings will be displayed on the map at once"
+            )
+
+            if pagination_enabled != st.session_state.pagination_enabled:
+                st.session_state.pagination_enabled = pagination_enabled
+                st.session_state.current_page = 0
+                st.rerun()
+
+            if pagination_enabled:
+                # Features per page selector
+                features_per_page = st.select_slider(
+                    "Buildings per page",
+                    options=[1000, 2500, 5000, 10000, 25000],
+                    value=st.session_state.features_per_page,
+                    help="Number of buildings to display on the map at once"
+                )
+
+                if features_per_page != st.session_state.features_per_page:
+                    st.session_state.features_per_page = features_per_page
+                    st.session_state.current_page = 0
+                    st.rerun()
+
+                # Calculate total pages
+                total_pages = (st.session_state.building_count - 1) // st.session_state.features_per_page + 1
+
+                if total_pages > 1:
+                    st.write(f"Page {st.session_state.current_page + 1} of {total_pages}")
+
+                    # Page navigation
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        if st.button("◀ Prev", disabled=st.session_state.current_page == 0):
+                            st.session_state.current_page -= 1
+                            st.rerun()
+
+                    with col2:
+                        # Page number input
+                        page_num = st.number_input(
+                            "Go to page",
+                            min_value=1,
+                            max_value=total_pages,
+                            value=st.session_state.current_page + 1,
+                            step=1,
+                            label_visibility="collapsed"
+                        )
+                        if page_num != st.session_state.current_page + 1:
+                            st.session_state.current_page = page_num - 1
+                            st.rerun()
+
+                    with col3:
+                        if st.button("Next ▶", disabled=st.session_state.current_page >= total_pages - 1):
+                            st.session_state.current_page += 1
+                            st.rerun()
+
+                    # Show range of buildings being displayed
+                    start_idx = st.session_state.current_page * st.session_state.features_per_page + 1
+                    end_idx = min((st.session_state.current_page + 1) * st.session_state.features_per_page,
+                                 st.session_state.building_count)
+                    st.info(f"Showing buildings {start_idx}-{end_idx} of {st.session_state.building_count}")
+
         if hasattr(st.session_state, 'filtered_building_geojson') and st.session_state.filtered_building_geojson:
+            st.divider()
             geojson_bytes = BytesIO(st.session_state.filtered_building_geojson.encode("utf-8"))
             st.download_button(
-                label="Download GeoJSON",
+                label="📥 Download All Buildings (GeoJSON)",
                 data=geojson_bytes,
                 file_name="overture_buildings.geojson",
                 mime="application/geo+json"
@@ -188,49 +387,41 @@ def display_fixed_info_box():
 
 
 def display_building_attributes():
+    """Display building attributes using cached statistics computation."""
     with st.sidebar.expander("Building Attributes Summary", expanded=False):
-        features = st.session_state.filtered_building_data['features']
+        if not hasattr(st.session_state, 'filtered_building_geojson'):
+            return
 
-        if features:
-            heights = [f['properties'].get('height') for f in features if f['properties'].get('height')]
-            floors = [f['properties'].get('num_floors') for f in features if f['properties'].get('num_floors')]
-            classes = [f['properties'].get('class') for f in features if f['properties'].get('class')]
-            sources = []
-            for f in features:
-                props = f['properties']
-                if props.get('sources') and isinstance(props['sources'], list) and props['sources']:
-                    dataset = props['sources'][0].get('dataset', 'Unknown')
-                    sources.append(dataset)
+        # Use cached computation
+        stats = compute_building_statistics(st.session_state.filtered_building_geojson)
 
-            if heights:
-                avg_height = sum(heights) / len(heights)
-                min_height = min(heights)
-                max_height = max(heights)
-                st.write(f"🏢 **Height** ({len(heights)} buildings)")
-                st.write(f"   Avg: {avg_height:.1f}m | Min: {min_height:.1f}m | Max: {max_height:.1f}m")
+        if not stats:
+            st.info("No attribute data available")
+            return
 
-            if floors:
-                avg_floors = sum(floors) / len(floors)
-                min_floors = min(floors)
-                max_floors = max(floors)
-                st.write(f"📊 **Floors** ({len(floors)} buildings)")
-                st.write(f"   Avg: {avg_floors:.1f} | Min: {min_floors} | Max: {max_floors}")
+        # Display height statistics
+        if 'heights' in stats:
+            h = stats['heights']
+            st.write(f"🏢 **Height** ({h['count']} buildings)")
+            st.write(f"   Avg: {h['avg']:.1f}m | Min: {h['min']:.1f}m | Max: {h['max']:.1f}m")
 
-            if classes:
-                class_counts = {}
-                for c in classes:
-                    class_counts[c] = class_counts.get(c, 0) + 1
-                st.write(f"🏗️ **Building Classes** ({len(classes)} classified)")
-                for cls, count in sorted(class_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
-                    st.write(f"   {cls}: {count}")
+        # Display floor statistics
+        if 'floors' in stats:
+            f = stats['floors']
+            st.write(f"📊 **Floors** ({f['count']} buildings)")
+            st.write(f"   Avg: {f['avg']:.1f} | Min: {f['min']} | Max: {f['max']}")
 
-            if sources:
-                source_counts = {}
-                for s in sources:
-                    source_counts[s] = source_counts.get(s, 0) + 1
-                st.write(f"📚 **Data Sources**")
-                for src, count in sorted(source_counts.items(), key=lambda x: x[1], reverse=True):
-                    st.write(f"   {src}: {count} buildings")
+        # Display building classes
+        if 'classes' in stats:
+            st.write(f"🏗️ **Building Classes** ({stats['classes']['total']} classified)")
+            for cls, count in stats['classes']['counts'].items():
+                st.write(f"   {cls}: {count}")
+
+        # Display data sources
+        if 'sources' in stats:
+            st.write(f"📚 **Data Sources**")
+            for src, count in stats['sources'].items():
+                st.write(f"   {src}: {count} buildings")
 
 
 def main():

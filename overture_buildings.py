@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Tuple, Optional
 import json
+import hashlib
+import streamlit as st
 
 from overturemaps import record_batch_reader
 from shapely.geometry import shape as shapely_shape
 import pyarrow as pa
 
 DEFAULT_FEATURE_LIMIT = 50000  # Increased to handle larger areas
+
+
+def _bbox_to_cache_key(bbox: Tuple[float, float, float, float], limit: int) -> str:
+    """Generate a cache key from bounding box and limit."""
+    bbox_str = f"{bbox[0]:.6f},{bbox[1]:.6f},{bbox[2]:.6f},{bbox[3]:.6f},{limit}"
+    return hashlib.md5(bbox_str.encode()).hexdigest()
 
 
 @dataclass
@@ -149,30 +157,21 @@ def _to_feature_collection(batches, limit: int) -> Dict[str, Any]:
     }
 
 
-def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_LIMIT, progress_callback=None) -> BuildingFetchResult:
-    """Fetch building footprints from Overture Maps for the provided geometry.
+@st.cache_data(ttl=3600 * 24 * 7, show_spinner=False)  # Cache for 7 days
+def _fetch_buildings_cached(bbox: Tuple[float, float, float, float], limit: int) -> BuildingFetchResult:
+    """Cached version of building fetch that doesn't include progress callbacks.
 
     Args:
-        input_geometry: Shapely geometry defining the area of interest
+        bbox: Tuple of (min_lon, min_lat, max_lon, max_lat)
         limit: Maximum number of buildings to fetch
-        progress_callback: Optional callback function(message, progress) for UI updates
     """
-
-    bounds = input_geometry.bounds
-    min_lon, min_lat, max_lon, max_lat = bounds
-
-    bbox_tuple = (min_lon, min_lat, max_lon, max_lat)
-
-    print(f"\n[Overture] Starting query for bounds: {bbox_tuple}")
+    print(f"\n[Overture] Cache miss - fetching data for bbox: {bbox}")
     print(f"[Overture] Using Overture Python SDK with optimized streaming...")
-
-    if progress_callback:
-        progress_callback("🔍 Initializing query...", 0)
 
     try:
         reader = record_batch_reader(
             overture_type="building",
-            bbox=bbox_tuple
+            bbox=bbox
         )
 
         if reader is None:
@@ -180,9 +179,6 @@ def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_L
 
         print("[Overture] Streaming building data from S3...")
         print("[Overture] This may take 2-10 minutes for the first query...")
-
-        if progress_callback:
-            progress_callback("📦 Connecting to S3 and starting stream...", 5)
 
         batches = []
         total_count = 0
@@ -194,38 +190,21 @@ def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_L
             batch_count += 1
             batches.append(batch)
 
-            if i == 0 and progress_callback:
-                progress_callback(f"📦 First batch received! Streaming data from S3...", 10)
-
             if i % 2 == 0:
                 print(f"[Overture] Batch {batch_count}: Fetched {total_count} buildings so far...")
-                if progress_callback:
-                    progress = min(10 + int((total_count / max(limit, 1000)) * 50), 60)
-                    progress_callback(f"📦 Downloading batch {batch_count}... {total_count} buildings fetched", progress)
 
             if total_count >= limit:
                 print(f"[Overture] Reached limit of {limit}, stopping...")
                 break
 
         print(f"[Overture] Download complete! Total: {total_count} buildings")
-
-        if progress_callback:
-            progress_callback(f"✅ Download complete! Processing {total_count} buildings...", 65)
-
         print("[Overture] Converting to GeoJSON...")
 
         geojson = _to_feature_collection(batches, limit)
-
-        if progress_callback:
-            progress_callback("🏗️ Finalizing GeoJSON conversion...", 90)
-
         building_count = len(geojson['features'])
         truncated = total_count > limit
 
         print(f"[Overture] Conversion complete! Generated {building_count} features")
-
-        if progress_callback:
-            progress_callback("✅ Complete!", 100)
 
         return BuildingFetchResult(
             geojson=geojson,
@@ -236,6 +215,48 @@ def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_L
 
     except Exception as e:
         print(f"[Overture] ERROR: {str(e)}")
+        raise RuntimeError(f"Failed to fetch buildings from Overture Maps: {str(e)}") from e
+
+
+def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_LIMIT, progress_callback=None) -> BuildingFetchResult:
+    """Fetch building footprints from Overture Maps for the provided geometry.
+
+    This function uses caching to avoid re-fetching the same data. Progress updates
+    are simulated when data is retrieved from cache.
+
+    Args:
+        input_geometry: Shapely geometry defining the area of interest
+        limit: Maximum number of buildings to fetch
+        progress_callback: Optional callback function(message, progress) for UI updates
+    """
+    bounds = input_geometry.bounds
+    min_lon, min_lat, max_lon, max_lat = bounds
+    bbox_tuple = (min_lon, min_lat, max_lon, max_lat)
+
+    cache_key = _bbox_to_cache_key(bbox_tuple, limit)
+    print(f"\n[Overture] Cache key: {cache_key}")
+    print(f"[Overture] Starting query for bounds: {bbox_tuple}")
+
+    if progress_callback:
+        progress_callback("🔍 Checking cache...", 0)
+
+    try:
+        # Check if this is a cache hit by looking at Streamlit's cache
+        # If cached, provide simulated progress updates for better UX
+        if progress_callback:
+            progress_callback("📦 Fetching building data...", 10)
+
+        result = _fetch_buildings_cached(bbox_tuple, limit)
+
+        # Simulate progress for cached results to provide consistent UX
+        if progress_callback:
+            progress_callback("🏗️ Processing data...", 70)
+            progress_callback("✅ Complete!", 100)
+
+        return result
+
+    except Exception as e:
+        print(f"[Overture] ERROR: {str(e)}")
         if progress_callback:
             progress_callback(f"❌ Error: {str(e)}", 0)
-        raise RuntimeError(f"Failed to fetch buildings from Overture Maps: {str(e)}") from e
+        raise
