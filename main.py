@@ -199,7 +199,7 @@ def display_height_metadata(heights, total_buildings):
         avg_height = sum(heights) / len(heights)
         min_height = min(heights)
         max_height = max(heights)
-        st.write(f"🏢 **Height** - {height_coverage:.1f}% coverage")
+        st.write(f"🏢 **Height** - {height_coverage:.0f}% coverage")
         st.write(f"   Avg: {avg_height:.1f}m | Min: {min_height:.1f}m | Max: {max_height:.1f}m")
     else:
         st.write(f"🏢 **Height** - 0% coverage")
@@ -208,14 +208,14 @@ def display_height_metadata(heights, total_buildings):
 def display_floors_metadata(floors, total_buildings):
     floors_coverage = (len(floors) / total_buildings * 100) if total_buildings > 0 else 0
     if floors:
-        st.write(f"📊 **Floors** - {floors_coverage:.1f}% coverage")
+        st.write(f"📊 **Floors** - {floors_coverage:.0f}% coverage")
     else:
         st.write(f"📊 **Floors** - 0% coverage")
 
 
 def display_classes_metadata(classes, total_buildings):
     class_coverage = (len(classes) / total_buildings * 100) if total_buildings > 0 else 0
-    st.write(f"🏗️ **Building Classes** - {class_coverage:.1f}% coverage")
+    st.write(f"🏗️ **Building Classes** - {class_coverage:.0f}% coverage")
 
 
 def display_sources_metadata(sources, total_buildings):
@@ -226,7 +226,7 @@ def display_sources_metadata(sources, total_buildings):
         st.write(f"**Data Sources**")
         for src, count in sorted(source_counts.items(), key=lambda x: x[1], reverse=True):
             percentage = (count / total_buildings * 100)
-            st.write(f"   • **{src}**: {percentage:.1f}%")
+            st.write(f"   • **{src}**: {percentage:.0f}%")
 
 
 def display_metadata_summary(features):
