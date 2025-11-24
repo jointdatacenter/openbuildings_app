@@ -65,8 +65,30 @@ This application uses the Overture Maps Python SDK to query building data:
 - **Method**: Direct S3 queries via Overture Python SDK
 - **Speed**: 2-10 minutes depending on area size (first query downloads data)
 - **Authentication**: None required - freely accessible
-- **Source Data**: Overture Maps Foundation release 2025-10-22.0
+- **Source Data**: Overture Maps Foundation release 2025-11-19.0
 - **Coverage**: Global (2.3 billion buildings)
+
+#### Updating the Overture Release Version
+
+Overture Maps releases new data monthly with a **60-day retention policy**. To keep the app working:
+
+1. **Check for new releases** at [Overture Release Calendar](https://docs.overturemaps.org/release-calendar/)
+2. **Update every ~2 months** to stay within the retention window
+3. **Edit** `overture_buildings.py` line 218:
+   ```python
+   release="2025-11-19.0"  # Update this to the latest release
+   ```
+4. **Find latest release**: Visit the release calendar or check the S3 bucket structure
+
+**Signs you need to update:**
+- Error: "Failed to fetch buildings from Overture Maps"
+- The current release is older than 60 days
+
+**Quick update command:**
+```bash
+# Check latest release at: https://docs.overturemaps.org/release-calendar/
+# Then edit overture_buildings.py and update the release parameter
+```
 
 ### Licensing
 
