@@ -397,7 +397,7 @@ def process_imagery_dates(bounds, zoom_level):
 
 def main():
     st.sidebar.title("Overture Buildings Explorer")
-    st.sidebar.caption(f"Data Release: {OVERTURE_RELEASE}")
+    st.sidebar.caption(f"Data Release: {OVERTURE_RELEASE} [[?]](https://docs.overturemaps.org/release-calendar/)")
     initialize_session_state()
 
     uploaded_file = st.sidebar.file_uploader("Upload a GeoJSON file", type="geojson")
@@ -413,7 +413,7 @@ def main():
             zoom_level = st.session_state.map_data.get('zoom', 0)
             process_imagery_dates(bounds, zoom_level)
 
-        if st.sidebar.button("Fetch Overture Buildings", key="download_building_button"):
+        if st.sidebar.button("Fetch Buildings", key="download_building_button"):
             download_and_process_building_data(st.session_state.input_geometry)
 
         render_opacity_slider()
