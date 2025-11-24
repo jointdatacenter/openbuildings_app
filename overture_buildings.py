@@ -61,51 +61,83 @@ def _convert_to_python_type(value):
 
 
 def _extract_properties(record: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract relevant properties from Overture building record."""
+    """Extract all available properties from Overture building record."""
     properties = {}
 
-    try:
-        if 'id' in record and _is_valid_value(record['id']):
-            properties['id'] = str(record['id'])
-    except:
-        pass
+    fields_to_extract = [
+        ('id', str),
+        ('height', float),
+        ('num_floors', int),
+        ('class', str),
+        ('subtype', str),
+        ('names', None),
+        ('level', int),
+        ('has_parts', bool),
+        ('is_underground', bool),
+        ('facade_color', str),
+        ('facade_material', str),
+        ('roof_material', str),
+        ('roof_shape', str),
+        ('roof_direction', float),
+        ('roof_orientation', str),
+        ('roof_color', str),
+        ('eave_height', float),
+        ('min_height', float),
+        ('min_floor', int),
+        ('sources', None),
+    ]
 
-    try:
-        if 'height' in record and _is_valid_value(record['height']):
-            properties['height'] = float(_convert_to_python_type(record['height']))
-    except:
-        pass
+    for field_name, field_type in fields_to_extract:
+        try:
+            if field_name in record and _is_valid_value(record[field_name]):
+                value = record[field_name]
 
-    try:
-        if 'num_floors' in record and _is_valid_value(record['num_floors']):
-            properties['num_floors'] = int(_convert_to_python_type(record['num_floors']))
-    except:
-        pass
+                if field_name == 'sources':
+                    if isinstance(value, str):
+                        value = json.loads(value)
+                    value = _convert_to_python_type(value)
+                    if value:
+                        properties[field_name] = value
+                elif field_name == 'names':
+                    if isinstance(value, str):
+                        value = json.loads(value)
+                    value = _convert_to_python_type(value)
+                    if value:
+                        properties[field_name] = value
+                elif field_type == int:
+                    properties[field_name] = int(_convert_to_python_type(value))
+                elif field_type == float:
+                    properties[field_name] = float(_convert_to_python_type(value))
+                elif field_type == bool:
+                    properties[field_name] = bool(_convert_to_python_type(value))
+                elif field_type == str:
+                    properties[field_name] = str(value)
+                else:
+                    properties[field_name] = _convert_to_python_type(value)
+        except:
+            pass
 
-    try:
-        if 'class' in record and _is_valid_value(record['class']):
-            properties['class'] = str(record['class'])
-    except:
-        pass
-
-    try:
-        if 'sources' in record and _is_valid_value(record['sources']):
-            sources = record['sources']
-            if isinstance(sources, str):
-                sources = json.loads(sources)
-            sources = _convert_to_python_type(sources)
-            if sources:
-                properties['sources'] = sources
-    except:
-        pass
+    for key, value in record.items():
+        if key not in properties and key != 'geometry' and _is_valid_value(value):
+            try:
+                properties[key] = _convert_to_python_type(value)
+            except:
+                pass
 
     return properties
 
 
-def _to_feature_collection(batches, limit: int) -> Dict[str, Any]:
-    """Convert PyArrow record batches to GeoJSON FeatureCollection."""
+def _to_feature_collection(batches, limit: int, input_geometry=None) -> Dict[str, Any]:
+    """Convert PyArrow record batches to GeoJSON FeatureCollection.
+
+    Args:
+        batches: PyArrow record batches
+        limit: Maximum number of features to process
+        input_geometry: Optional Shapely geometry to filter buildings that intersect
+    """
     features = []
     count = 0
+    filtered_count = 0
 
     for batch in batches:
         if count >= limit:
@@ -122,7 +154,14 @@ def _to_feature_collection(batches, limit: int) -> Dict[str, Any]:
                 if not geometry:
                     continue
 
-                centroid = shapely_shape(geometry).centroid
+                building_shape = shapely_shape(geometry)
+
+                if input_geometry is not None:
+                    if not building_shape.intersects(input_geometry):
+                        filtered_count += 1
+                        continue
+
+                centroid = building_shape.centroid
 
                 properties = _extract_properties(row.to_dict())
                 properties['latitude'] = centroid.y
@@ -137,11 +176,14 @@ def _to_feature_collection(batches, limit: int) -> Dict[str, Any]:
                 count += 1
 
                 if count % 500 == 0:
-                    print(f"[Overture] Processed {count} buildings...")
+                    print(f"[Overture] Processed {count} buildings (filtered out {filtered_count})...")
 
             except Exception as e:
                 print(f"[Overture] Warning: Failed to process feature: {e}")
                 continue
+
+    if filtered_count > 0:
+        print(f"[Overture] Filtered out {filtered_count} buildings outside polygon boundary")
 
     return {
         'type': 'FeatureCollection',
@@ -212,9 +254,9 @@ def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_L
         if progress_callback:
             progress_callback(f"✅ Download complete! Processing {total_count} buildings...", 65)
 
-        print("[Overture] Converting to GeoJSON...")
+        print("[Overture] Converting to GeoJSON and filtering to polygon boundary...")
 
-        geojson = _to_feature_collection(batches, limit)
+        geojson = _to_feature_collection(batches, limit, input_geometry)
 
         if progress_callback:
             progress_callback("🏗️ Finalizing GeoJSON conversion...", 90)
