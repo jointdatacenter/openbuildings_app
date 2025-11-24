@@ -214,7 +214,8 @@ def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_L
     try:
         reader = record_batch_reader(
             overture_type="building",
-            bbox=bbox_tuple
+            bbox=bbox_tuple,
+            release="2025-11-19.0"
         )
 
         if reader is None:
