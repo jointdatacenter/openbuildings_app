@@ -10,7 +10,8 @@ from overturemaps import record_batch_reader
 from shapely.geometry import shape as shapely_shape
 import pyarrow as pa
 
-DEFAULT_FEATURE_LIMIT = 50000  # Increased to handle larger areas
+DEFAULT_FEATURE_LIMIT = 50000
+OVERTURE_RELEASE = "2025-11-19.0"
 
 
 @dataclass
@@ -215,7 +216,7 @@ def fetch_buildings_from_overture(input_geometry, limit: int = DEFAULT_FEATURE_L
         reader = record_batch_reader(
             overture_type="building",
             bbox=bbox_tuple,
-            release="2025-11-19.0"
+            release=OVERTURE_RELEASE
         )
 
         if reader is None:

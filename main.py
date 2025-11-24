@@ -10,6 +10,7 @@ from io import BytesIO
 import json
 from overture_buildings import (
     DEFAULT_FEATURE_LIMIT,
+    OVERTURE_RELEASE,
     fetch_buildings_from_overture,
 )
 from map_features import *
@@ -396,6 +397,7 @@ def process_imagery_dates(bounds, zoom_level):
 
 def main():
     st.sidebar.title("Overture Buildings Explorer")
+    st.sidebar.caption(f"Data Release: {OVERTURE_RELEASE}")
     initialize_session_state()
 
     uploaded_file = st.sidebar.file_uploader("Upload a GeoJSON file", type="geojson")
