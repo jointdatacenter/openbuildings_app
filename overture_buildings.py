@@ -11,7 +11,7 @@ from shapely.geometry import shape as shapely_shape
 import pyarrow as pa
 
 DEFAULT_FEATURE_LIMIT = 50000
-OVERTURE_RELEASE = "2025-11-19.0"
+OVERTURE_RELEASE = "2026-02-18.0"
 
 
 @dataclass
